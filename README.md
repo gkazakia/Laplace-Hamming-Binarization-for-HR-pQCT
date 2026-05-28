@@ -1,185 +1,123 @@
-# Laplace-Hamming Binarization for HR-pQCT
+# Laplace-Hamming Binarization for HR-pQCT (Scanco XtremeCT II)
 
-A Python implementation of the Laplace-Hamming (LH) frequency-domain binarization approach for second-generation Scanco HR-pQCT (XtremeCT II) images. This script produces binary bone masks that improve upon the manufacturer's standard Gaussian-based segmentation by better preserving fine trabecular and cortical features.
+A clean, **calibration-free** Python reimplementation of Scanco IPL's
+`fft_laplace_hamming` + `norm_max` + `threshold` pipeline for binarizing
+HR-pQCT AIM volumes.
 
-This implementation is part of the Bone Quality Research Lab (BQRL) open-source HR-pQCT analysis pipeline at UCSF.
+Validated on a variety of samples (n > 80) with different scanning protocol against IPL ground truth:
+**Dice = 0.999** .
 
----
+## What it does
 
-## Background
-
-The standard Scanco segmentation applies a Gaussian smoothing filter followed by a fixed density threshold. While straightforward, this approach tends to miss fine bone features — thin trabeculae and small cortical pores — particularly on second-generation scanners where the improved spatial resolution makes these structures resolvable. The Laplace-Hamming approach addresses this by applying a frequency-domain filter that combines low-pass smoothing with Laplacian edge sharpening, resulting in more complete segmentation of fine structures.
-
-The filter parameters and binarization threshold used here follow those developed and validated by Sadoughi et al. (2023) specifically for the Scanco XtremeCT II at 60.7 µm isotropic voxel size.
-
----
+Takes a Scanco grayscale `.AIM` file and a periosteal (filled bone) contour,
+and produces a binary bone mask numerically equivalent to IPL's LH workflow.
+Every parameter is recovered directly from the IPL processing log and the
+AIM file headers — there are **no per-scanner or per-sample calibration
+constants**.
 
 ## Pipeline
 
+Per the IPL `EVAL_LH_EFF` log:
+
+1. Read grayscale AIM in **native int16** units (linear attenuation × Mu_Scaling)
+2. IPL pre-FFT preprocessing: `bounding_box_cut border=1` + `offset_add 1 1 1` + `fill_offset_duplicate`
+3. Mirror-pad x/y/z to the next power of 2 (`D3P_FFT_AdjustDimensionsMirror`)
+4. Apply `fft_laplace_hamming` with `laplace_eps=0.45`, `lp_cut_off_freq=0.30`, `hamming_amp=1.0`
+5. Crop back to the extended frame
+6. `norm_max max=200000 type_out=short` (float → int16, clip to ±32767)
+7. `threshold lower=475 upper=1000` permille (i.e. int16 ≥ 15564)
+8. Undo +1 boundary, mask with periosteal contour
+9. *(Optional)* `cl_nr_extract min_number=70` connected-component cleanup
+
+## Filter formula
+
 ```
-AIM grayscale image
-        │
-        ▼
-[1] Load AIM via ITK ScancoImageIO
-        │
-        ▼
-[2] Apply Laplace-Hamming frequency-domain filter
-    (low-pass cutoff = 0.3, Laplacian ε = 0.45, Hamming amplitude = 1.0)
-        │
-        ▼
-[3] Binarize using IPL-equivalent intensity threshold
-    (equivalent to seg_gauss lower threshold = 1170 mgHA/cm³)
-        │
-        ▼
-[4] Remove isolated islands < 70 voxels (6-connectivity)
-        │
-        ▼
-[5] Restrict to periosteal (filled bone) mask
-        │
-        ▼
-LH_Binary.nii.gz  +  LH_preview.png
-```
+H(k) = (2π)² · [(1 − ε) + ε · |k|²] · W(|k|)
 
----
-
-## Requirements
-
-| Package | Version tested | Notes |
-|---|---|---|
-| Python | ≥ 3.9 | |
-| numpy | ≥ 1.23 | |
-| scipy | ≥ 1.9 | |
-| SimpleITK | ≥ 2.2 | |
-| itk | ≥ 5.3 | Must include `ScancoImageIO` |
-| matplotlib | ≥ 3.6 | |
-
-The `itk` package must be built with `ScancoImageIO` support to read `.AIM` files. This is available in the ORMIR conda environment:
-
-```bash
-conda create -n ORMIR python=3.10
-conda activate ORMIR
-pip install itk-scancoimageio SimpleITK scipy matplotlib
+where
+  |k|    = radial frequency in physical units (cycles / mm)
+  W(|k|) = 0.5 + 0.5 · cos(π · |k| / k_lp)     for |k| < k_lp
+         = 0                                    otherwise
+  k_lp   = lp_cut_off_freq / voxel_size_mm     ( = 4.943 lp/mm @ 0.0607 mm)
 ```
 
----
+The `(2π)²` prefactor is the continuous Laplacian eigenvalue and recovers
+the absolute scale of IPL's float output without any per-scanner calibration.
 
-## Inputs
+### Note on the "Hamming" name
 
-| Input | Description |
-|---|---|
-| `scan.AIM` | Grayscale HR-pQCT image exported from Scanco XtremeCT II |
-| `bone_mask.nii.gz` | Periosteal (filled bone) mask from the auto-contouring step |
+Despite IPL's command being named `fft_laplace_hamming`, the actual cosine
+window kernel that reproduces IPL's binary output is the **Hann window**
+(`0.5 + 0.5·cos`), not the textbook Hamming window (`0.54 + 0.46·cos`).
 
-The periosteal mask is used to restrict the LH binary output to the bone ROI, excluding any segmented tissue outside the periosteal envelope.
-
----
-
-## Outputs
-
-| File | Description |
-|---|---|
-| `<basename>_LH_Binary.nii.gz` | Binary bone mask (uint8, 0/1) in the periosteal ROI |
-| `<basename>_LH_preview.png` | 2-panel axial preview: raw image and LH binary overlay |
-
-All outputs are saved as NIfTI-1 (`.nii.gz`) with the spatial metadata (voxel spacing, origin, direction) copied from the input AIM file.
-
----
+A consistent interpretation of IPL's `hamming_amp` parameter is:
+```
+W = (1 − amp/2) + (amp/2) · cos(π · |k| / k_lp)
+```
+With the log's default `hamming_amp=1.0` this gives Hann (0.5/0.5).
+With `hamming_amp ≈ 0.92` it would give textbook Hamming (0.54/0.46).
 
 ## Usage
 
-### IDE / Spyder
+### IDE (Spyder) mode
 
-Edit the `USER CONFIGURATION` section at the top of `laplace_hamming_binarization.py`:
+Edit the `USER CONFIGURATION` block at the top of
+`Laplace_Hamming_Binarization.py`:
 
 ```python
-INPUT_AIM_PATH        = r"path/to/scan.AIM"
-OUTPUT_DIR            = r"path/to/output/"
-FILLED_BONE_MASK_PATH = r"path/to/bone_mask.nii.gz"
+INPUT_AIM_PATH        = r"D:\Research\...\C0002398_version1.AIM"
+OUTPUT_DIR            = r"D:\Research\...\ormir outputs"
+FILLED_BONE_MASK_PATH = r"D:\Research\...\C0002398_version1_PRX_mask.nii.gz"
+IPL_GT_PATH           = None   # set to an AIM path to compute Dice
 ```
 
-Then run the script directly.
+Then run the file.
 
 ### Command line
 
 ```bash
-python laplace_hamming_binarization.py \
+python Laplace_Hamming_Binarization.py \
     scan.AIM \
     output_dir/ \
-    bone_mask.nii.gz
-
-# Skip preview PNG:
-python laplace_hamming_binarization.py \
-    scan.AIM output_dir/ bone_mask.nii.gz --no-preview
+    bone_mask.{aim,nii.gz} \
+    --ipl-gt ipl_seg.AIM \
+    --cc-cleanup
 ```
 
-### As a module
+The periosteal mask can be either a Scanco `.AIM` (auto-aligned via the AIM
+origin) or a NIfTI already in the grayscale frame.
 
-```python
-from laplace_hamming_binarization import run_lh_binarization
+## Outputs
 
-result = run_lh_binarization(
-    input_aim_path        = "scan.AIM",
-    output_dir            = "output/",
-    filled_bone_mask_path = "bone_mask.nii.gz",
-)
+For input `scan.AIM` in `output_dir/`:
 
-lh_binary = result["lh_binary"]  # boolean numpy array, shape (Z, Y, X)
-```
+- `scan_LH_Binary.nii.gz` — binarized bone mask (within periosteal ROI)
+- `scan_LH_preview.png` — axial slice preview (3-panel if `--ipl-gt` given)
 
----
-
-## Filter Parameters
-
-| Parameter | Value | Description |
-|---|---|---|
-| `LP_CUT_OFF_FREQ` | 0.3 | Low-pass cutoff as fraction of maximum physical frequency |
-| `LAPLACE_EPS` | 0.45 | Laplacian sharpening epsilon |
-| `HAMMING_AMP` | 1.0 | Hamming window amplitude |
-| `AMPLIFICATION` | 1.0 | Overall filter gain |
-| `LH_THRESHOLD` | 15564 | Bone threshold in scaled IPL units (≡ 1170 mgHA/cm³) |
-| `CC_MIN_VOXELS` | 70 | Minimum connected component size (voxels) |
-
-Parameters follow Sadoughi et al. (2023). Do not change these values unless working with a different scanner model or acquisition protocol.
-
-### Recalibrating the IPL intensity constants
-
-The constants `IPL_SCALE_A` and `IPL_SCALE_B` map the filtered image into Scanco's IPL intensity space so the threshold of 15564 applies correctly. They are calibrated from a 3-point IPL reference (min, max, mean of the filtered image in IPL units) using:
+## Dependencies
 
 ```
-A = (IPL_max - IPL_min) / (filtered_max - filtered_min)
-B = IPL_min - A × filtered_min
+numpy
+scipy
+SimpleITK
+matplotlib
 ```
 
-If you are using a different scanner or protocol, obtain the IPL reference statistics from a Scanco IPL run on a representative scan and substitute them into the equations above.
-
----
-
-## Validation
-
-This implementation was validated against the Scanco IPL reference pipeline on 21 patellofemoral joint HR-pQCT scans (Scanco XtremeCT II, 60.7 µm isotropic). Binary mask agreement was assessed using the Dice similarity coefficient:
-
-**Dice score: 99.5% ± 0.16%**
-
-This indicates near-identical segmentation between the open-source Python pipeline and the IPL reference, confirming that the Laplace-Hamming filter parameters and binarization threshold are faithfully reproduced.
-
----
+No `itk` / `ScancoImageIO` requirement — AIM files are parsed directly,
+which avoids ITK's HU rescaling and the spurious ±24 char-offset issues.
 
 ## References
 
-Sadoughi S., Subramanian A., Ramil G., Burghardt A.J., Kazakia G.J. (2023). A Laplace-Hamming Binarization Approach for Second-Generation HR-pQCT Rescues Fine Feature Segmentation. *Journal of Bone and Mineral Research*, 38(7), 1006–1014. https://doi.org/10.1002/jbmr.4819
+- **LH method**: Laib A., Rüegsegger P. (1999). Calibration of trabecular bone
+  structure measurements of in vivo three-dimensional peripheral quantitative
+  computed tomography with 28-µm-resolution microcomputed tomography.
+  *Bone* 24(1), 35–39. PMID 10227372.
+- **Application to second-gen HR-pQCT**: Sadoughi S., Subramanian A., Ramil G.,
+  Burghardt A.J., Kazakia G.J. (2023). A Laplace-Hamming Binarization
+  Approach for Second-Generation HR-pQCT Rescues Fine Feature Segmentation.
+  *JBMR* 38(7), 1006–1014.
 
-Sadoughi S., Subramanian A., Ramil G., Zhou M., Burghardt A.J., Kazakia G.J. (2024). HR-pQCT Cross-Calibration Using Standard vs. Laplace-Hamming Binarization Approach. *JBMR Plus*, 8(10), ziae116. https://doi.org/10.1093/jbmrpl/ziae116
+## Authors
 
----
-
-## License
-
-MIT License. See `LICENSE` for details.
-
----
-
-## Contact
-
-Kazakia Lab — Bone Quality Research Lab  
-Department of Radiology and Biomedical Imaging  
-University of California, San Francisco  
+Yihua Zhu — Kazakia Lab (BQRL), UCSF Musculoskeletal Quantitative Imaging
+Research Group.
