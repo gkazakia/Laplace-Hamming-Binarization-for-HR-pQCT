@@ -44,7 +44,7 @@ Note on the "Hamming" name
 Despite the IPL command being named "fft_laplace_hamming", the actual cosine
 window kernel that reproduces IPL's output is the **Hann window**
 (0.5 + 0.5*cos), not the textbook Hamming window (0.54 + 0.46*cos).  This was
-verified empirically on PFJ021/L0003481 where Hann variant gives Dice > 0.997.
+verified empirically >80 samples where Hann variant gives Dice > 0.999.
 
 A consistent interpretation of IPL's `hamming_amp` parameter is:
     W = (1 - hamming_amp/2) + (hamming_amp/2) * cos(pi*|k|/k_lp)
