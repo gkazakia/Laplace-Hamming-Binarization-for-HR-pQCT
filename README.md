@@ -28,6 +28,7 @@ Per the IPL `EVAL_LH_EFF` log:
 7. `threshold lower=475 upper=1000` permille (i.e. int16 ≥ 15564)
 8. Undo +1 boundary, mask with periosteal contour
 9. *(Optional)* `cl_nr_extract min_number=70` connected-component cleanup
+10. Added multithreading to speed up FFT
 
 ## Filter formula
 
