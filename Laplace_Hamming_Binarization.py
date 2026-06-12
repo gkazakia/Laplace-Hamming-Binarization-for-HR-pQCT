@@ -44,7 +44,7 @@ Note on the "Hamming" name
 Despite the IPL command being named "fft_laplace_hamming", the actual cosine
 window kernel that reproduces IPL's output is the **Hann window**
 (0.5 + 0.5*cos), not the textbook Hamming window (0.54 + 0.46*cos).  This was
-verified empirically >80 samples where Hann variant gives Dice > 0.999.
+verified empirically on PFJ021/L0003481 where Hann variant gives Dice > 0.997.
 
 A consistent interpretation of IPL's `hamming_amp` parameter is:
     W = (1 - hamming_amp/2) + (hamming_amp/2) * cos(pi*|k|/k_lp)
@@ -354,9 +354,12 @@ def fft_laplace_hamming(vol, voxel_size_mm,
     eps  = dtype(laplace_eps)
     H = TPI2 * ((dtype(1.0) - eps) + eps * K2) * win
 
-    F = fftn(vol)
+    # workers=-1 parallelises the transform across all cores (pocketfft gives
+    # bit-identical results regardless of worker count). The padded volume is
+    # power-of-2 and large, so this is a free, exact speedup.
+    F = fftn(vol, workers=-1)
     F *= H
-    out = np.real(ifftn(F)).astype(dtype)
+    out = np.real(ifftn(F, workers=-1)).astype(dtype)
     return out
 
 
